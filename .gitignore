@@ -1,0 +1,38 @@
+# openneuro files
+data/
+*.nii
+*.nii.gz
+*.gii
+*.mgz
+
+# big files
+*.npz
+*.npy
+*.parquet
+*.h5
+*.hdf5
+
+# nilearn files
+nilearn_cache/
+nilearn_data/
+joblib/
+
+# ide
+.idea/
+*.iml
+.vscode/
+.ipynb_checkpoints/
+
+# venv's
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Wirtualne środowiska (Conda / venv)
+venv/
+env/
+.venv/
+.conda/
+psychedelics_env/
