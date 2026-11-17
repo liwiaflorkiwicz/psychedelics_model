@@ -13,13 +13,13 @@ FMRIPREP_VERSION = "fmriprep-22.0.2"
 LOCAL_BASE_DIR = os.path.join(os.getcwd(), "data", DATASET_ID)
 
 # number of subject to download
-SUBJECTS = ["sub-PC001"]
+SUBJECTS = ["sub-PC002"]
 
 # s3 init
 s3 = boto3.client("s3", config=Config(signature_version=UNSIGNED))
 
 def download_s3_file(s3_key: str, local_path: str) -> None:
-    """PDownloads single file from S3, if it's not existing locally yet."""
+    """Downloads single file from S3, if it's not existing locally yet."""
     if os.path.exists(local_path):
         print(f"[skipped - already existing] {local_path}")
         return
@@ -55,18 +55,19 @@ def download_phenotype_and_participants() -> None:
 # download fmri preprocessed data
 # can define tasks or subjects
 def download_preprocessed_fmri(subject_id: str, task: str = "task-rest") -> None:
-    """downloads clean fMRIPrep data (BOLD MNI, Brain Mask, Confounds) for given patient."""
-    prefix = f"{DATASET_ID}/derivatives/{FMRIPREP_VERSION}/{subject_id}/"
+    """Downloads clean fMRIPrep data (BOLD MNI, Brain Mask, Confounds) for given patient."""
+    sub_id = subject_id if subject_id.startswith("sub-") else f"sub-{subject_id}"
+    prefix = f"{DATASET_ID}/derivatives/{FMRIPREP_VERSION}/{sub_id}/"
     paginator = s3.get_paginator("list_objects_v2")
 
-    print(f"\n-- downloading data for {subject_id} ({task}) ---")
+    print(f"\n-- downloading data for {sub_id} ({task}) ---")
     found_any = False
 
     for page in paginator.paginate(Bucket=BUCKET_NAME, Prefix=prefix):
         for obj in page.get("Contents", []):
             s3_key = obj["Key"]
 
-            # Filter by task (np. task-rest) and only needed files
+            # Filter by task (e.g. task-rest) and only needed files
             if task not in s3_key:
                 continue
 
@@ -81,11 +82,12 @@ def download_preprocessed_fmri(subject_id: str, task: str = "task-rest") -> None
                 download_s3_file(s3_key, local_path)
 
     if not found_any:
-        print(f"[warn] Cannot find files for {subject_id} and task {task}.")
+        print(f"[warn] Cannot find files for {sub_id} and task {task}.")
 
 
 if __name__ == "__main__":
-    download_phenotype_and_participants()
+    # needed only once
+    # download_phenotype_and_participants()
 
     for sub in SUBJECTS:
         download_preprocessed_fmri(subject_id=sub, task="task-rest")        # only rest and only sub 001 [for now]

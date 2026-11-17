@@ -248,10 +248,11 @@ def subjects(
 ) -> Tuple[pd.DataFrame, Dict[Tuple[str, str, str], np.ndarray]]:
     """
     Run the full multimodal feature extraction pipeline across subjects and tasks,
-    returning a combined DataFrame (with ses-01, ses-02, and delta features) and
-    a dictionary of 200 x 200 functional connectivity matrices.
+    saving per-subject questionnaire/clinical results to data/processed/<sub-PCXXX>/
+    and returning a combined DataFrame plus a dictionary of FC matrices.
     """
     base_dir = os.path.join(os.getcwd(), "data", "ds006110")
+    processed_base_dir = os.path.join(os.getcwd(), "data", "processed")
     task_list = list(tasks) if tasks is not None else ["rest"]
 
     records: List[Dict[str, Any]] = []
@@ -275,16 +276,24 @@ def subjects(
         sub_id = _normalize_subject_id(patient)
         print(f"\nProcessing {sub_id}...", flush=True)
 
+        # Create per-subject output directory: data/processed/sub-PCXXX/
+        subject_out_dir = os.path.join(processed_base_dir, sub_id)
+        os.makedirs(subject_out_dir, exist_ok=True)
+
         # 1. Demographics, dose, and psychometric scales
         patient_profile = extract_patient_clinical_demo(shared_pheno_files, subject_id=sub_id)
+
+        # Save per-subject questionnaire & demographic results into data/processed/sub-PCXXX/
+        df_sub_questionnaires = pd.DataFrame([patient_profile]).drop(columns=["ses02_EDI_ONE"], errors="ignore")
+        q_csv_path = os.path.join(subject_out_dir, f"{sub_id}_questionnaires.csv")
+        df_sub_questionnaires.to_csv(q_csv_path, index=False)
+        print(f"  [{sub_id}] Saved questionnaires to: {q_csv_path}", flush=True)
 
         # 2. Confounds (QC) -> other features
         for task in task_list:
             ses_feature_keys: Dict[str, List[str]] = {"ses01": [], "ses02": []}
 
             for ses in ["ses-01", "ses-02"]:
-                ses_tag = ses.replace("-", "")
-
                 print(f"  [{sub_id} | {ses} | {task}] Confounds & QC...", flush=True)
                 conf_df, qc_dict = extract_confounds_and_qc(
                     base_dir=base_dir,
@@ -321,8 +330,8 @@ def subjects(
 
 # MAIN EXECUTION ENTRYPOINT
 if __name__ == "__main__":
-    patients = ["PC001"]
-    tasks = ["rest"]
+    patients = ["PC002", "PC001"]           # initiate patients
+    tasks = ["rest"]                        # and tasks for analysis
 
     df_patients, fc_store = subjects(
         patients=patients,
@@ -336,15 +345,16 @@ if __name__ == "__main__":
     print(df_patients.T.tail(35))
 
     output_dir = os.path.join(os.getcwd(), "data", "processed")
-    os.makedirs(output_dir, exist_ok=True)
+    all_subjects_dir = os.path.join(output_dir, "all_subjects")
+    os.makedirs(all_subjects_dir, exist_ok=True)
 
-    # Save tabular features to CSV
-    csv_path = os.path.join(output_dir, "features_ses01_ses02.csv")
+    # Save cohort-level tabular features to CSV
+    csv_path = os.path.join(all_subjects_dir, "features_ses01_ses02.csv")
     df_patients.to_csv(csv_path, index=False)
 
     # Save FC matrices (200 x 200) to compressed NumPy .npz archive
-    npz_path = os.path.join(output_dir, "fc_matrices_ses01_ses02.npz")
+    npz_path = os.path.join(all_subjects_dir, "fc_matrices_ses01_ses02.npz")
     np.savez_compressed(npz_path, **{f"{k[0]}_{k[1]}_{k[2]}": v for k, v in fc_store.items()})
 
-    print(f"\nSaved tabular features to: {csv_path}")
-    print(f"Saved FC matrices to:      {npz_path}")
+    print(f"\nSaved cohort tabular features to: {csv_path}")
+    print(f"Saved FC matrices to:             {npz_path}")
