@@ -85,7 +85,7 @@ def extract_patient_clinical_demo(
     # Extract psychometric questionnaires for ses-01 (baseline) and ses-02 (psilocybin)
     ignore_cols = {
         "participant_id", "psi_id", "ses", "session", "edi_one",
-        "session_id", "visitday", "redcap_event_name", "imputation_threshold"       # to check threshold
+        "session_id", "visitday", "redcap_event_name", "imputation_threshold",
     }
     session_questionnaires = {
         "ses-01": [("asc11", "ASC11.TSV"), ("idas2", "IDAS-II.TSV")],
@@ -113,7 +113,6 @@ def extract_patient_clinical_demo(
                     result[f"{ses_tag}_{clean_col}"] = float(num_val) if pd.notna(num_val) else val
 
     return result
-
 
 # 2. SCHAEFER 200 ATLAS (7 YEO FUNCTIONAL NETWORKS)
 def load_schaefer_atlas(n_rois: int = 200, yeo_networks: int = 7) -> Tuple[str, np.ndarray, Dict[str, int]]:
@@ -145,13 +144,13 @@ def extract_confounds_and_qc(
     subject_id: str,
     session: str,
     task: str = "rest",
-    strategy: str = "friston24_acompcor",
     fd_threshold: float = 0.5,
     scrubbing: bool = True,
 ) -> Tuple[Optional[pd.DataFrame], Dict[str, Any]]:
     """
     Parse fMRIPrep desc-confounds_timeseries.tsv to compute scalar motion QC metrics
-    and build a clean nuisance regressor matrix for NiftiLabelsMasker denoising.
+    and build a clean nuisance regressor matrix (Friston-24 + WM/CSF + top 5 aCompCor)
+    for NiftiLabelsMasker denoising.
     """
     sub_id = _normalize_subject_id(subject_id)
     ses_tag = session.replace("-", "")
@@ -208,16 +207,13 @@ def extract_confounds_and_qc(
 
     # Build nuisance regression matrix (Friston-24 + WM/CSF + top 5 aCompCor)
     base_motion = ["trans_x", "trans_y", "trans_z", "rot_x", "rot_y", "rot_z"]
-    if strategy == "simple":
-        candidate_cols = base_motion + ["white_matter", "csf"]
-    else:
-        friston24 = [
-            f"{m}{suffix}"
-            for m in base_motion
-            for suffix in ["", "_derivative1", "_power2", "_derivative1_power2"]
-        ]
-        acompcor_top5 = [f"a_comp_cor_0{i}" for i in range(5)]
-        candidate_cols = friston24 + ["white_matter", "csf"] + acompcor_top5
+    friston24 = [
+        f"{m}{suffix}"
+        for m in base_motion
+        for suffix in ["", "_derivative1", "_power2", "_derivative1_power2"]
+    ]
+    acompcor_top5 = [f"a_comp_cor_0{i}" for i in range(5)]
+    candidate_cols = friston24 + ["white_matter", "csf"] + acompcor_top5
 
     # Include non-steady-state T1 equilibration outlier regressors if present
     nss_cols = [c for c in df_conf.columns if c.startswith("non_steady_state_outlier")]
@@ -235,7 +231,6 @@ def extract_confounds_and_qc(
             clean_confounds_df[f"motion_spike_tr_{idx}"] = spike_col
 
     return clean_confounds_df, qc_metrics
-
 
 # 4. BOLD TIME SERIES, TR, AND FUNCTIONAL CONNECTIVITY (PEARSON-Z / LEDOIT-WOLF)
 def extract_bold_and_fc(
@@ -256,10 +251,14 @@ def extract_bold_and_fc(
     func_dir = os.path.join(base_dir, "derivatives", "fmriprep-22.0.2", sub_id, session, "func")
 
     bold_matches = sorted(
-        glob.glob(os.path.join(func_dir, f"{sub_id}_{session}_task-{task}*space-MNI152NLin2009cAsym_desc-preproc_bold.nii.gz"))
+        glob.glob(
+            os.path.join(func_dir, f"{sub_id}_{session}_task-{task}*space-MNI152NLin2009cAsym_desc-preproc_bold.nii.gz")
+        )
     )
     mask_matches = sorted(
-        glob.glob(os.path.join(func_dir, f"{sub_id}_{session}_task-{task}*space-MNI152NLin2009cAsym_desc-brain_mask.nii.gz"))
+        glob.glob(
+            os.path.join(func_dir, f"{sub_id}_{session}_task-{task}*space-MNI152NLin2009cAsym_desc-brain_mask.nii.gz")
+        )
     )
 
     if not bold_matches or not mask_matches:
@@ -396,7 +395,8 @@ def extract_graph_topology_metrics(
     mean_clustering = float(np.mean(clustering_vec))
 
     # 8. Empirical Rich-Club (phi(k)) and Maslov-Sneppen null models (Small-Worldness + normalized Rich-Club)
-    rc_emp = np.asarray(bct.rich_club_wu(w_norm), dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rc_emp = np.asarray(bct.rich_club_wu(w_norm), dtype=float)
 
     c_rand_list: List[float] = []
     l_rand_list: List[float] = []
@@ -411,7 +411,8 @@ def extract_graph_topology_metrics(
         l_r, _, _, _, _ = bct.charpath(d_mat_rand, include_diagonal=False, include_infinite=False)
         l_rand_list.append(float(l_r))
 
-        rc_r = np.asarray(bct.rich_club_wu(w_rand), dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rc_r = np.asarray(bct.rich_club_wu(w_rand), dtype=float)
         rc_rand_list.append(rc_r)
 
     mean_c_rand = float(np.mean(c_rand_list))
@@ -464,7 +465,11 @@ def extract_graph_topology_metrics(
     })
 
     # B. Nodal metric vectors -> aggregated per 7 Yeo subnetworks
-    part_coef_vec = bct.participation_coef(w_norm, ci_yeo)
+    # Isolated nodes (Ko == 0) receive P_i = 0 per BCT definition; errstate suppresses 0/0 warning
+    with np.errstate(divide="ignore", invalid="ignore"):
+        part_coef_vec = bct.participation_coef(w_norm, ci_yeo)
+    part_coef_vec = np.nan_to_num(part_coef_vec, nan=0.0)
+
     strength_vec = bct.strengths_und(w_norm)
     # Normalized betweenness centrality: BC_i / ((N - 1)(N - 2))
     betweenness_vec = bct.betweenness_wei(length_mat) / float((n_nodes - 1) * (n_nodes - 2))
@@ -483,17 +488,152 @@ def extract_graph_topology_metrics(
         sub_triu = sub_fc[np.triu_indices(sub_fc.shape[0], k=1)]
 
         metrics[f"{net_prefix}_part_coef_{net_name}"] = round(float(np.nanmean(part_coef_vec[mask])), 5)
-        metrics[f"{net_prefix}_within_fc_{net_name}"] = round(float(np.mean(sub_triu)),
-                                                              5) if sub_triu.size > 0 else np.nan
+        metrics[f"{net_prefix}_within_fc_{net_name}"] = round(float(np.mean(sub_triu)), 5) if sub_triu.size > 0 else np.nan
         metrics[f"{net_prefix}_strength_{net_name}"] = round(float(np.mean(strength_vec[mask])), 5)
         metrics[f"{net_prefix}_betweenness_{net_name}"] = round(float(np.mean(betweenness_vec[mask])), 6)
         metrics[f"{net_prefix}_nodal_eff_{net_name}"] = round(float(np.mean(nodal_eff_vec[mask])), 5)
 
     return metrics
 
-#################
+# 6. DYNAMIC (SLIDING WINDOW dFC std(Q)) & ENTROPIC METRICS (SampEn, LZC)
+def _sample_entropy_1d(signal: np.ndarray, m: int = 2, r_factor: float = 0.2) -> float:
+    """Compute Sample Entropy (Richman & Moorman, 2000) for a 1D BOLD time series."""
+    x = np.asarray(signal, dtype=float)
+    n = x.size
+    sd = np.std(x)
+    if n <= m + 1 or sd == 0:
+        return np.nan
 
-# COHORT PIPELINE & WITHIN-SUBJECT DIFFERENCE VECTORS (DELTA X = SES-02 - SES-01)
+    r = r_factor * sd
+    n_templates = n - m
+
+    # Embedding template vectors of length m and m + 1
+    xm = np.lib.stride_tricks.sliding_window_view(x[: n - 1], m)
+    xm1 = np.lib.stride_tricks.sliding_window_view(x, m + 1)
+
+    # Pairwise Chebyshev distances (excluding self-matches i == j)
+    dist_m = np.max(np.abs(xm[:, None, :] - xm[None, :, :]), axis=2)
+    dist_m1 = np.max(np.abs(xm1[:, None, :] - xm1[None, :, :]), axis=2)
+
+    off_diag = ~np.eye(n_templates, dtype=bool)
+    b_count = int(np.sum((dist_m < r) & off_diag))
+    a_count = int(np.sum((dist_m1 < r) & off_diag))
+
+    if a_count == 0 or b_count == 0:
+        return np.nan
+    return float(-np.log(a_count / b_count))
+
+
+def _lempel_ziv_complexity_1d(signal: np.ndarray) -> float:
+    """Compute normalized Lempel-Ziv Complexity (Kaspar & Schuster, 1987) after median binarization."""
+    x = np.asarray(signal, dtype=float)
+    n = x.size
+    if n < 2:
+        return np.nan
+
+    s = (x > np.median(x)).astype(np.uint8)
+    i, k, l = 0, 1, 1
+    c = 1
+    k_max = 1
+
+    while True:
+        if s[i + k - 1] == s[l + k - 1]:
+            k += 1
+            if l + k > n:
+                c += 1
+                break
+        else:
+            if k > k_max:
+                k_max = k
+            i += 1
+            if i == l:
+                c += 1
+                l += k_max
+                if l + 1 > n:
+                    break
+                i = 0
+                k = 1
+                k_max = 1
+            else:
+                k = 1
+
+    b_norm = n / np.log2(n)
+    return float(c / b_norm)
+
+
+def extract_dynamic_and_entropic_metrics(
+    time_series: Optional[np.ndarray],
+    tr: float,
+    ci_yeo: np.ndarray,
+    net_to_id: Dict[str, int],
+    session: str,
+    task: str,
+    proportional_threshold: float = 0.20,
+    window_sec: float = 45.0,
+    step_sec: float = 10.0,
+    seed: int = 42,
+) -> Dict[str, Any]:
+    """
+    Compute dynamic connectivity and signal complexity features from BOLD time series (T x 200):
+      - dfc_modularity_std: temporal standard deviation of modularity std(Q) across sliding windows,
+      - dfc_modularity_mean: mean dynamic modularity across sliding windows,
+      - bold_sampen_mean / bold_sampen_Default: whole-brain and DMN Sample Entropy,
+      - bold_lzc_mean / bold_lzc_Default: whole-brain and DMN Lempel-Ziv Complexity.
+    """
+    ses_tag = session.replace("-", "")
+    prefix = f"{ses_tag}_{task}_dyn"
+
+    empty_dyn = {
+        f"{prefix}_dfc_modularity_std": np.nan,
+        f"{prefix}_dfc_modularity_mean": np.nan,
+        f"{prefix}_bold_sampen_mean": np.nan,
+        f"{prefix}_bold_sampen_Default": np.nan,
+        f"{prefix}_bold_lzc_mean": np.nan,
+        f"{prefix}_bold_lzc_Default": np.nan,
+    }
+    if time_series is None or pd.isna(tr) or tr <= 0:
+        return empty_dyn
+
+    n_timepoints, n_rois = time_series.shape
+
+    # 1. Sliding-window dynamic functional connectivity (dFC -> std(Q))
+    win_tr = max(20, int(round(window_sec / tr)))
+    step_tr = max(1, int(round(step_sec / tr)))
+
+    q_windows: List[float] = []
+    for start in range(0, n_timepoints - win_tr + 1, step_tr):
+        ts_win = time_series[start : start + win_tr, :]
+        r_win = np.corrcoef(ts_win.T)
+        np.fill_diagonal(r_win, 0.0)
+        w_win = np.where(r_win > 0, r_win, 0.0)
+        w_win_th = bct.threshold_proportional(w_win, p=proportional_threshold, copy=True)
+
+        # Fixed Louvain seed ensures std(Q) reflects brain dynamics rather than heuristic randomness
+        if hasattr(bct, "community_louvain"):
+            _, q_w = bct.community_louvain(w_win_th, seed=seed)
+        else:
+            _, q_w = bct.modularity_louvain_und(w_win_th, seed=seed)
+        q_windows.append(float(q_w))
+
+    dfc_q_std = float(np.std(q_windows, ddof=1)) if len(q_windows) > 1 else np.nan
+    dfc_q_mean = float(np.mean(q_windows)) if len(q_windows) > 0 else np.nan
+
+    # 2. BOLD time-series entropy (Sample Entropy and Lempel-Ziv Complexity across 200 ROIs)
+    sampen_vals = np.array([_sample_entropy_1d(time_series[:, i]) for i in range(n_rois)], dtype=float)
+    lzc_vals = np.array([_lempel_ziv_complexity_1d(time_series[:, i]) for i in range(n_rois)], dtype=float)
+
+    dmn_mask = ci_yeo == net_to_id["Default"]
+
+    return {
+        f"{prefix}_dfc_modularity_std": round(dfc_q_std, 5) if pd.notna(dfc_q_std) else np.nan,
+        f"{prefix}_dfc_modularity_mean": round(dfc_q_mean, 5) if pd.notna(dfc_q_mean) else np.nan,
+        f"{prefix}_bold_sampen_mean": round(float(np.nanmean(sampen_vals)), 5),
+        f"{prefix}_bold_sampen_Default": round(float(np.nanmean(sampen_vals[dmn_mask])), 5),
+        f"{prefix}_bold_lzc_mean": round(float(np.nanmean(lzc_vals)), 5),
+        f"{prefix}_bold_lzc_Default": round(float(np.nanmean(lzc_vals[dmn_mask])), 5),
+    }
+
+
 # COHORT PIPELINE & WITHIN-SUBJECT DIFFERENCE VECTORS (DELTA X = SES-02 - SES-01)
 def subjects(
     patients: Iterable[str],
@@ -544,7 +684,7 @@ def subjects(
         df_sub_questionnaires.to_csv(q_csv_path, index=False)
         print(f"  [{sub_id}] Saved questionnaires to: {q_csv_path}", flush=True)
 
-        # 2. Confounds (QC) -> BOLD & FC -> Graph topology metrics
+        # 2. Confounds (QC) -> BOLD & FC -> Graph topology -> Dynamic & entropic features
         for task in task_list:
             ses_feature_keys: Dict[str, List[str]] = {"ses01": [], "ses02": []}
 
@@ -557,7 +697,6 @@ def subjects(
                     subject_id=sub_id,
                     session=ses,
                     task=task,
-                    strategy="friston24_acompcor",
                     fd_threshold=0.5,
                     scrubbing=True,
                 )
@@ -586,18 +725,16 @@ def subjects(
                         f"{ses_tag}_{task}_fc_std": round(float(np.std(upper_vals)), 5),
                         f"{ses_tag}_{task}_fc_pos_mean": round(float(np.mean(pos_vals)), 5) if pos_vals.size > 0 else np.nan,
                     }
-                    patient_profile.update(fc_summary)
-                    ses_feature_keys[ses_tag].extend(fc_summary.keys())
                 else:
-                    empty_fc_summary = {
+                    fc_summary = {
                         f"{ses_tag}_{task}_fc_mean": np.nan,
                         f"{ses_tag}_{task}_fc_std": np.nan,
                         f"{ses_tag}_{task}_fc_pos_mean": np.nan,
                     }
-                    patient_profile.update(empty_fc_summary)
-                    ses_feature_keys[ses_tag].extend(empty_fc_summary.keys())
+                patient_profile.update(fc_summary)
+                ses_feature_keys[ses_tag].extend(fc_summary.keys())
 
-                # Wywołanie ekstrakcji 44 metryk topologicznych (globalnych + 7 sieci Yeo)
+                # Extract 44 static graph topology metrics (global + 7 Yeo networks)
                 print(f"  [{sub_id} | {ses} | {task}] Global & 7-network graph metrics...", flush=True)
                 graph_metrics = extract_graph_topology_metrics(
                     fc_matrix=fc_mat,
@@ -611,6 +748,23 @@ def subjects(
                 )
                 patient_profile.update(graph_metrics)
                 ses_feature_keys[ses_tag].extend(graph_metrics.keys())
+
+                # Extract 6 dynamic connectivity and BOLD entropy metrics
+                print(f"  [{sub_id} | {ses} | {task}] Dynamic FC std(Q) & BOLD entropy...", flush=True)
+                dyn_metrics = extract_dynamic_and_entropic_metrics(
+                    time_series=ts_bold,
+                    tr=tr,
+                    ci_yeo=ci_yeo7,
+                    net_to_id=net_to_id,
+                    session=ses,
+                    task=task,
+                    proportional_threshold=proportional_threshold,
+                    window_sec=45.0,
+                    step_sec=10.0,
+                    seed=42,
+                )
+                patient_profile.update(dyn_metrics)
+                ses_feature_keys[ses_tag].extend(dyn_metrics.keys())
 
             # 3. Within-subject difference vector (delta X = X_ses02 - X_ses01) for regression models
             fd_s1 = patient_profile.get(f"ses01_{task}_mean_fd", np.nan)
@@ -628,7 +782,7 @@ def subjects(
                     round(float(v2 - v1), 6) if pd.notna(v1) and pd.notna(v2) else np.nan
                 )
 
-        # Zapis kompletnego profilu (wszystkich cech) pojedynczego pacjenta do jego folderu
+        # Save complete single-subject feature table to subject's directory
         df_sub_full = pd.DataFrame([patient_profile]).drop(columns=["ses02_EDI_ONE"], errors="ignore")
         full_sub_csv_path = os.path.join(subject_out_dir, f"{sub_id}_all_features.csv")
         df_sub_full.to_csv(full_sub_csv_path, index=False)
@@ -639,11 +793,10 @@ def subjects(
     df_patients = pd.DataFrame(records).drop(columns=["ses02_EDI_ONE"], errors="ignore")
     return df_patients, fc_store
 
-
 # MAIN EXECUTION ENTRYPOINT
 if __name__ == "__main__":
-    patients = ["PC201"]           # initiate patients
-    tasks = ["rest"]               # and tasks for analysis
+    patients = ["PC001"]           # Define subject IDs for analysis
+    tasks = ["rest"]               # Define fMRI tasks for analysis
 
     df_patients, fc_store = subjects(
         patients=patients,
